@@ -5,12 +5,14 @@ TARGET = omawrite
 TEMPLATE = app
 
 HEADERS += \
+    src/workspace.h \
     src/backend.h \
     src/cli.h \
     src/markdownhighlighter.h \
     src/systemtheme.h
 
 SOURCES += \
+    src/workspace.cpp \
     src/main.cpp \
     src/backend.cpp \
     src/cli.cpp \

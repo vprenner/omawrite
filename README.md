@@ -12,7 +12,9 @@ Install via the Omarchy Package Repository via the `omawrite` package. It's inst
 
 ## Command line
 
-`omawrite` opens an empty document and `omawrite FILE` opens a Markdown file.
+`omawrite` restores the previous window's tabs, or starts with an empty tab.
+`omawrite FILE ...` also opens the supplied Markdown files in tabs. Opening a
+file that is already in this window selects its existing tab.
 `omawrite --help` and `omawrite --version` answer in the terminal without opening a window.
 
 ## Shortcuts
@@ -21,6 +23,8 @@ Install via the Omarchy Package Repository via the `omawrite` package. It's inst
 - `Ctrl+Shift+S` saves as.
 - `Ctrl+O` opens a Markdown file through the portal picker.
 - `Ctrl+P` opens the system print dialog.
+- `Ctrl+T` creates a tab; `Ctrl+W` closes the current tab.
+- `Ctrl+Tab` / `Ctrl+Shift+Tab` (or `Ctrl+PageDown` / `Ctrl+PageUp`) switch tabs.
 - `Ctrl+N` opens a new Omawrite window.
 - `Ctrl+Z`, `Ctrl+Shift+Z`, and `Ctrl+Y` handle undo and redo.
 - `Super+F` toggles fullscreen. Qt maps this key as `Meta+F`.
@@ -34,13 +38,33 @@ Install via the Omarchy Package Repository via the `omawrite` package. It's inst
 - In the unsaved-changes dialog, `Alt+C`, `Alt+D`, and `Alt+S` choose Cancel,
   Discard, and Save.
 
-Once a document has been saved to a file, edits are auto-saved to that file a
-moment after you stop typing, so `Ctrl+S` is rarely needed. Untitled drafts are
-never auto-saved — they wait for an explicit save so Omawrite never picks a file
-name for you. Unsaved drafts are recovered after an abnormal exit. Omawrite also
-watches open files and warns before an external change can replace local work;
-auto-save pauses until you reload, keep your version, or save. A recovered draft
-is never auto-saved over its file — save it to keep it.
+Use **Aa ⋮** in the footer to select **Narrow**, **Medium**, **Wide**, or
+**Full width**, adjust the font size, and turn **Autosave named files** on or off.
+These preferences are remembered and apply to every tab in the window. Medium
+is the original 65-character writing width; narrow and wide use 50 and 90
+characters. All widths fit within the available window space.
+
+Autosave is on by default. Once a document has been saved to a file, edits are
+auto-saved a moment after you stop typing. Turning autosave off cancels pending
+saves; `Ctrl+S` still saves explicitly. Untitled drafts wait for an explicit save
+so Omawrite never picks a file name for you. Omawrite watches every open file,
+including background tabs, and warns about external changes. Autosave pauses
+until you reload, keep your version, or save.
+
+Closing the window preserves its open tabs, active tab, cursor/scroll positions,
+and unsaved text. The next launch restores them. Closing an individual modified
+tab asks whether to save, discard, or cancel; discarded tabs are not restored.
+Each tab retains its own undo history while the app is running.
+
+Sessions are stored as private, atomic JSON snapshots in
+`$XDG_DATA_HOME/Omacom/omawrite/sessions` (normally
+`~/.local/share/Omacom/omawrite/sessions`). Snapshots update after a short typing
+pause and on normal window close, independently of the autosave setting. They
+contain document text, including unnamed drafts. Clean files reopen from disk;
+unsaved edits and missing files restore from the snapshot. Restored unsaved
+changes are never auto-saved over their file: save explicitly to keep them.
+Separate running windows use separate locked sessions. Each launch restores one
+available previous window session.
 
 The font button in the footer picks the writing font from any installed text font,
 and Omawrite remembers the choice. IBM Plex Mono is the default.
@@ -53,7 +77,7 @@ Omawrite at the size it is designed around; larger and smaller sizes scale from 
 
 ## Requirements
 
-- Qt 6: `qt6-base` and `qt6-declarative` (which includes Qt Quick Controls)
+- Qt 6.7 or newer: `qt6-base` and `qt6-declarative` (which includes Qt Quick Controls)
 - `xdg-desktop-portal` and a portal backend
 
 The IBM Plex Mono font is bundled under the SIL Open Font License 1.1; see

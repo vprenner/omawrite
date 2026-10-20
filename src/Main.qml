@@ -8,32 +8,39 @@ import "EditorMutations.js" as EditorMutations
 
 ApplicationWindow {
     id: win
+    readonly property var workspace: typeof session !== "undefined" ? session : null
+    readonly property var documentBackend: workspace ? workspace.activeDocument : backend
+    property bool switchingTabs: false
+    readonly property bool tabActionsEnabled: !unsavedChangesDialog.visible
+        && !saveFileDialog.visible && !openFileDialog.visible && !externalChangeDialog.visible
     width: 1280
     height: 820
     minimumWidth: 720
     minimumHeight: 520
     visible: true
-    title: (backend.modified ? "* " : "") + backend.fileName + " - Omawrite"
+    title: (win.documentBackend.modified ? "* " : "") + win.documentBackend.fileName + " - Omawrite"
 
-    readonly property bool darkMode: backend.darkMode
-    readonly property color pageColor: backend.themeBackground
-    readonly property color textColor: backend.themeForeground
+    readonly property bool darkMode: win.documentBackend.darkMode
+    readonly property color pageColor: win.documentBackend.themeBackground
+    readonly property color textColor: win.documentBackend.themeForeground
     readonly property color mutedColor: darkMode ? "#909191" : "#aeb1b5"
-    readonly property color selectionFill: backend.themeSelection
-    readonly property color selectionTextColor: backend.themeSelectionForeground
+    readonly property color selectionFill: win.documentBackend.themeSelection
+    readonly property color selectionTextColor: win.documentBackend.themeSelectionForeground
     // The desktop's text size knob (GNOME's text-scaling-factor, which
     // `omarchy display text size` drives) anchored so its 12px default leaves
     // the app at the sizes it was designed around, times the user's own
     // text size set with Ctrl+= / Ctrl+- / Ctrl+wheel.
-    readonly property real textScale: backend.textScale
+    readonly property real textScale: win.documentBackend.textScale
     readonly property int editorFontPixelSize: scaledSize(20)
     readonly property int footerHeight: scaledSize(32)
     // Never wider than the Flickable's viewport, whatever the floor asks for:
     // a tiling compositor can resize the window below its minimum width.
-    readonly property int editorWidth: Math.min(
-        Math.round(writerFontMetrics.averageCharacterWidth * 65),
-        Math.max(360, width - Math.round(writerFontMetrics.averageCharacterWidth * 20)),
-        Math.max(0, width - 48))
+    readonly property int editorWidth: documentBackend.widthMode === "full"
+        ? Math.max(0, width - 48)
+        : Math.min(Math.round(writerFontMetrics.averageCharacterWidth
+                             * ({narrow: 50, medium: 65, wide: 90}[documentBackend.widthMode] || 65)),
+                   Math.max(360, width - Math.round(writerFontMetrics.averageCharacterWidth * 20)),
+                   Math.max(0, width - 48))
     property bool closeConfirmed: false
     property bool searchOpen: false
     property bool searchUpdating: false
@@ -45,11 +52,16 @@ ApplicationWindow {
     property bool awaitingPendingSave: false
 
     Material.theme: darkMode ? Material.Dark : Material.Light
-    Material.accent: backend.themeAccent
+    Material.accent: win.documentBackend.themeAccent
     color: pageColor
 
     onClosing: function(close) {
-        if (closeConfirmed || !backend.modified)
+        if (workspace) {
+            workspace.saveViewState(editor.cursorPosition, editorFlick.contentY);
+            close.accepted = workspace.saveSession();
+            return;
+        }
+        if (closeConfirmed || !win.documentBackend.modified)
             return;
 
         close.accepted = false;
@@ -59,8 +71,12 @@ ApplicationWindow {
     }
 
     function requestOpen(url) {
-        if (!backend.modified) {
-            backend.open(url);
+        if (workspace) {
+            workspace.openFile(url);
+            return;
+        }
+        if (!win.documentBackend.modified) {
+            win.documentBackend.open(url);
             return;
         }
         pendingOpenUrl = url;
@@ -74,14 +90,46 @@ ApplicationWindow {
         if (action === "close") {
             closeConfirmed = true;
             close();
+        } else if (action === "closeTab") {
+            workspace.closeTab(workspace.currentIndex);
         } else if (action === "open") {
-            backend.open(pendingOpenUrl);
+            win.documentBackend.open(pendingOpenUrl);
+        }
+    }
+
+    function requestCloseTab(index) {
+        workspace.selectTab(index);
+        if (!documentBackend.modified) {
+            workspace.closeTab(index);
+            return;
+        }
+        pendingAction = "closeTab";
+        unsavedChangesDialog.open();
+    }
+
+    Connections {
+        target: win.workspace
+        function onActiveDocumentAboutToChange() {
+            win.switchingTabs = true;
+            win.workspace.saveViewState(editor.cursorPosition, editorFlick.contentY);
+            win.closeSearch();
+            externalChangeDialog.close();
+            fontPicker.close();
+        }
+        function onActiveDocumentChanged() {
+            win.documentBackend.activateDocument(editor.textDocument);
+            var state = win.workspace.viewState();
+            editor.cursorPosition = Math.min(editor.length, state.cursor || 0);
+            editorFlick.contentY = Math.max(0, Math.min(state.scroll || 0,
+                editorFlick.contentHeight - editorFlick.height));
+            win.switchingTabs = false;
+            editor.forceActiveFocus();
         }
     }
 
     FontMetrics {
         id: writerFontMetrics
-        font.family: backend.editorFont
+        font.family: win.documentBackend.editorFont
         font.pixelSize: win.editorFontPixelSize
     }
 
@@ -102,7 +150,7 @@ ApplicationWindow {
     function updateSearch(selectMatch) {
         searchDelay.stop();
         var previous = searchMatchIndex >= 0 ? searchMatches[searchMatchIndex] : 0;
-        searchMatches = backend.searchMatches(searchField.text);
+        searchMatches = win.documentBackend.searchMatches(searchField.text);
         searchMatchIndex = selectMatch ? (searchMatches.length > 0 ? 0 : -1)
                                        : matchAtOrAfter(previous);
         showSearchMatch(selectMatch);
@@ -119,7 +167,7 @@ ApplicationWindow {
     function showSearchMatch(selectMatch) {
         var start = searchMatchIndex >= 0 ? searchMatches[searchMatchIndex] : -1;
         searchUpdating = true;
-        backend.setSearchHighlight(searchField.text, start);
+        win.documentBackend.setSearchHighlight(searchField.text, start);
         if (selectMatch && start >= 0) {
             editor.select(start, start + searchField.text.length);
             editorFlick.ensureCursorVisible();
@@ -170,7 +218,7 @@ ApplicationWindow {
         editor.forceActiveFocus();
         searchOpen = false;
         searchUpdating = true;
-        backend.setSearchHighlight("", -1);
+        win.documentBackend.setSearchHighlight("", -1);
         editor.deselect();
         searchUpdating = false;
         replaceOpen = false;
@@ -186,7 +234,7 @@ ApplicationWindow {
 
     Shortcut {
         sequence: "Ctrl+S"
-        onActivated: backend.save()
+        onActivated: win.documentBackend.save()
     }
 
     Shortcut {
@@ -227,42 +275,66 @@ ApplicationWindow {
         // Ctrl++ is a different shortcut to Qt, not a shifted Ctrl+=, and it is
         // the only one a layout that puts + on its own key can reach.
         sequences: ["Ctrl+=", "Ctrl++"]
-        onActivated: backend.increaseTextSize()
+        onActivated: win.documentBackend.increaseTextSize()
     }
 
     Shortcut {
         sequence: "Ctrl+-"
-        onActivated: backend.decreaseTextSize()
+        onActivated: win.documentBackend.decreaseTextSize()
     }
 
     Shortcut {
         sequence: "Ctrl+0"
-        onActivated: backend.resetTextSize()
+        onActivated: win.documentBackend.resetTextSize()
     }
 
     Shortcut {
         sequence: "Ctrl+O"
-        onActivated: backend.openDialog()
+        onActivated: win.documentBackend.openDialog()
+    }
+
+    Shortcut {
+        sequence: "Ctrl+T"
+        enabled: win.workspace !== null && win.tabActionsEnabled
+        onActivated: win.workspace.newTab()
+    }
+
+    Shortcut {
+        sequence: "Ctrl+W"
+        enabled: win.workspace !== null && win.tabActionsEnabled
+        onActivated: win.requestCloseTab(win.workspace.currentIndex)
+    }
+
+    Shortcut {
+        sequences: ["Ctrl+Tab", "Ctrl+PageDown"]
+        enabled: win.workspace !== null && win.tabActionsEnabled
+        onActivated: win.workspace.selectTab((win.workspace.currentIndex + 1) % win.workspace.tabs.length)
+    }
+
+    Shortcut {
+        sequences: ["Ctrl+Shift+Tab", "Ctrl+PageUp"]
+        enabled: win.workspace !== null && win.tabActionsEnabled
+        onActivated: win.workspace.selectTab((win.workspace.currentIndex + win.workspace.tabs.length - 1) % win.workspace.tabs.length)
     }
 
     Shortcut {
         sequence: "Ctrl+N"
-        onActivated: backend.newWindow()
+        onActivated: win.documentBackend.newWindow()
     }
 
     Shortcut {
         sequence: "Ctrl+Shift+S"
-        onActivated: backend.saveAsDialog()
+        onActivated: win.documentBackend.saveAsDialog()
     }
 
     Shortcut {
         sequence: "Ctrl+P"
-        onActivated: backend.printDocument()
+        onActivated: win.documentBackend.printDocument()
     }
 
     Shortcut {
         sequence: "Ctrl+Shift+C"
-        onActivated: backend.copyAsHtml()
+        onActivated: win.documentBackend.copyAsHtml()
     }
 
     Shortcut {
@@ -294,7 +366,7 @@ ApplicationWindow {
     }
 
     Connections {
-        target: backend
+        target: win.documentBackend
 
         function onOpenDialogRequested() {
             openFileDialog.open();
@@ -331,9 +403,16 @@ ApplicationWindow {
     Dialogs.FileDialog {
         id: openFileDialog
         title: "Open File"
-        fileMode: Dialogs.FileDialog.OpenFile
+        fileMode: win.workspace ? Dialogs.FileDialog.OpenFiles : Dialogs.FileDialog.OpenFile
         nameFilters: ["Markdown files (*.md *.markdown)", "All files (*)"]
-        onAccepted: win.requestOpen(selectedFile)
+        onAccepted: {
+            if (win.workspace) {
+                for (var i = 0; i < selectedFiles.length; ++i)
+                    win.workspace.openFile(selectedFiles[i]);
+            } else {
+                win.requestOpen(selectedFile);
+            }
+        }
     }
 
     Dialogs.FileDialog {
@@ -341,7 +420,7 @@ ApplicationWindow {
         title: "Save File"
         fileMode: Dialogs.FileDialog.SaveFile
         nameFilters: ["Markdown files (*.md *.markdown)", "All files (*)"]
-        onAccepted: backend.saveAs(selectedFile)
+        onAccepted: win.documentBackend.saveAs(selectedFile)
         onRejected: {
             win.awaitingPendingSave = false;
             win.pendingAction = "";
@@ -351,28 +430,28 @@ ApplicationWindow {
     UnsavedChangesDialog {
         id: unsavedChangesDialog
         objectName: "unsavedChangesDialog"
-        fileName: backend.fileName
+        fileName: win.documentBackend.fileName
         darkMode: win.darkMode
         textScale: win.textScale
         textColor: win.textColor
         strongTextColor: win.textColor
-        activeButtonColor: backend.themeAccent
+        activeButtonColor: win.documentBackend.themeAccent
         containerWidth: win.width
         containerHeight: win.height
 
         // Discard must still mean discard, so nothing is auto-saved while
         // the writer decides.
-        onAboutToShow: backend.holdAutoSave(true)
-        onClosed: backend.holdAutoSave(false)
+        onAboutToShow: win.documentBackend.holdAutoSave(true)
+        onClosed: win.documentBackend.holdAutoSave(false)
 
         onDiscardRequested: {
-            backend.discardRecovery();
+            win.documentBackend.discardRecovery();
             win.completePendingAction();
         }
 
         onSaveRequested: {
             win.awaitingPendingSave = true;
-            backend.save();
+            win.documentBackend.save();
         }
         onCancelRequested: win.pendingAction = ""
     }
@@ -383,12 +462,12 @@ ApplicationWindow {
         textScale: win.textScale
         textColor: win.textColor
         strongTextColor: win.textColor
-        activeButtonColor: backend.themeAccent
+        activeButtonColor: win.documentBackend.themeAccent
         containerWidth: win.width
         containerHeight: win.height
 
-        onKeepRequested: backend.keepExternalVersion()
-        onReloadRequested: backend.reloadFromDisk()
+        onKeepRequested: win.documentBackend.keepExternalVersion()
+        onReloadRequested: win.documentBackend.reloadFromDisk()
     }
 
     ShortcutsDialog {
@@ -396,9 +475,93 @@ ApplicationWindow {
         darkMode: win.darkMode
         textScale: win.textScale
         textColor: win.textColor
-        activeButtonColor: backend.themeAccent
+        activeButtonColor: win.documentBackend.themeAccent
         containerWidth: win.width
         containerHeight: win.height
+    }
+
+    header: ToolBar {
+        objectName: "tabStrip"
+        enabled: win.tabActionsEnabled
+        visible: win.workspace !== null
+        height: visible ? win.scaledSize(40) : 0
+        background: Rectangle { color: win.pageColor }
+        RowLayout {
+            anchors.fill: parent
+            spacing: 0
+            ScrollView {
+                id: tabScroll
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                clip: true
+                contentWidth: tabRow.width
+                contentHeight: height
+                ScrollBar.vertical.policy: ScrollBar.AlwaysOff
+                ScrollBar.horizontal.policy: ScrollBar.AsNeeded
+                function revealCurrent() {
+                    var tab = tabRepeater.itemAt(win.workspace.currentIndex);
+                    if (!tab) return;
+                    if (tab.x < contentItem.contentX) contentItem.contentX = tab.x;
+                    else if (tab.x + tab.width > contentItem.contentX + availableWidth)
+                        contentItem.contentX = tab.x + tab.width - availableWidth;
+                }
+                Connections {
+                    target: win.workspace
+                    function onActiveDocumentChanged() { Qt.callLater(tabScroll.revealCurrent); }
+                }
+                Row {
+                    id: tabRow
+                    Repeater {
+                        id: tabRepeater
+                        model: win.workspace ? win.workspace.tabs : []
+                        delegate: Rectangle {
+                            required property int index
+                            required property var modelData
+                            width: win.scaledSize(190)
+                            height: win.scaledSize(40)
+                            color: index === win.workspace.currentIndex
+                                ? Qt.rgba(win.textColor.r, win.textColor.g, win.textColor.b, 0.09)
+                                : "transparent"
+                            Button {
+                                anchors.fill: parent
+                                anchors.rightMargin: win.scaledSize(32)
+                                flat: true
+                                text: (modelData.modified ? "• " : "")
+                                    + (modelData.externalChange ? "! " : "") + modelData.name
+                                contentItem: Label {
+                                    text: parent.text
+                                    textFormat: Text.PlainText
+                                    color: win.textColor
+                                    elide: Text.ElideMiddle
+                                    verticalAlignment: Text.AlignVCenter
+                                    font.pixelSize: win.scaledSize(12)
+                                }
+                                ToolTip.visible: hovered
+                                ToolTip.text: modelData.path || "Unsaved draft"
+                                onClicked: win.workspace.selectTab(index)
+                            }
+                            ToolButton {
+                                anchors.right: parent.right
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: win.scaledSize(32)
+                                text: "×"
+                                font.pixelSize: win.scaledSize(18)
+                                Accessible.name: "Close " + modelData.name
+                                onClicked: win.requestCloseTab(index)
+                            }
+                        }
+                    }
+                }
+            }
+            ToolButton {
+                objectName: "newTabButton"
+                text: "+"
+                Accessible.name: "New tab"
+                ToolTip.visible: hovered
+                ToolTip.text: "New tab (Ctrl+T)"
+                onClicked: win.workspace.newTab()
+            }
+        }
     }
 
     Item {
@@ -566,11 +729,11 @@ ApplicationWindow {
 
                 zoomNotches += notches;
                 while (zoomNotches >= 1) {
-                    backend.increaseTextSize();
+                    win.documentBackend.increaseTextSize();
                     zoomNotches -= 1;
                 }
                 while (zoomNotches <= -1) {
-                    backend.decreaseTextSize();
+                    win.documentBackend.decreaseTextSize();
                     zoomNotches += 1;
                 }
             }
@@ -648,7 +811,7 @@ ApplicationWindow {
                 color: win.textColor
                 selectedTextColor: win.selectionTextColor
                 selectionColor: win.selectionFill
-                font.family: backend.editorFont
+                font.family: win.documentBackend.editorFont
                 font.pixelSize: win.editorFontPixelSize
                 font.weight: Font.Normal
                 // Native rendering hints glyphs to the pixel grid, which is
@@ -662,12 +825,12 @@ ApplicationWindow {
                     color: win.textColor
                 }
                 onCursorRectangleChanged: editorFlick.ensureCursorVisible()
-                onCursorPositionChanged: backend.setCaretPosition(cursorPosition)
-                onFontChanged: backend.documentFontChanged()
+                onCursorPositionChanged: win.documentBackend.setCaretPosition(cursorPosition)
+                onFontChanged: win.documentBackend.documentFontChanged()
 
                 // One edit command, so a single undo takes the change back.
                 function replaceText(start, end, replacement) {
-                    backend.replaceRange(start, end, replacement);
+                    win.documentBackend.replaceRange(start, end, replacement);
                 }
 
                 function replaceSelectionWith(replacement) {
@@ -677,7 +840,7 @@ ApplicationWindow {
                 function wrapSelection(marker) {
                     forceActiveFocus();
                     EditorMutations.toggleWrap(editor, marker,
-                                               backend.emphasisSpanAt(cursorPosition, marker));
+                                               win.documentBackend.emphasisSpanAt(cursorPosition, marker));
                 }
 
                 function insertLink() {
@@ -685,7 +848,7 @@ ApplicationWindow {
                     var start = selectionStart;
                     var end = selectionEnd;
                     var selected = text.slice(start, end);
-                    var url = backend.clipboardUrl();
+                    var url = win.documentBackend.clipboardUrl();
                     var label = selected.length > 0 ? selected : "link text";
                     var markdown = markdownLink(label, url.length > 0 ? url : "https://");
                     var labelLength = escapeMarkdownLinkText(label).length;
@@ -708,7 +871,7 @@ ApplicationWindow {
                     }
                     var lineStart = text.lastIndexOf("\n", cursorPosition - 1) + 1;
                     var line = text.slice(lineStart, cursorPosition);
-                    if (backend.insideFence(cursorPosition)) {
+                    if (win.documentBackend.insideFence(cursorPosition)) {
                         replaceSelectionWith("\n");
                         return;
                     }
@@ -775,8 +938,8 @@ ApplicationWindow {
                     var filled = lines.filter(function(line) { return /\S/.test(line); });
                     if (!listItem(filled[0] || "")
                         || filled.some(function(line) { return /^\S/.test(line) && !listItem(line); })
-                        || backend.insideFence(start)
-                        || backend.insideFence(end))
+                        || win.documentBackend.insideFence(start)
+                        || win.documentBackend.insideFence(end))
                         return false;
 
                     // Every line moves by the same step, so the nesting within
@@ -827,7 +990,7 @@ ApplicationWindow {
                     if (start === end)
                         return false;
 
-                    var url = backend.clipboardUrl();
+                    var url = win.documentBackend.clipboardUrl();
                     if (url === "")
                         return false;
 
@@ -844,7 +1007,7 @@ ApplicationWindow {
                 }
 
                 function pasteClipboardAsPlainText() {
-                    var pastedText = backend.clipboardText();
+                    var pastedText = win.documentBackend.clipboardText();
                     if (pastedText.length > 0)
                         replaceSelectionWith(pastedText);
                 }
@@ -855,7 +1018,7 @@ ApplicationWindow {
                         return;
                     }
 
-                    var pos = backend.cursorPositionStep(cursorPosition, direction);
+                    var pos = win.documentBackend.cursorPositionStep(cursorPosition, direction);
                     cursorPosition = Math.max(0, Math.min(length, pos));
                 }
 
@@ -971,9 +1134,9 @@ ApplicationWindow {
 
                 onTextChanged: {
                     hoveredLinkUrl = "";
-                    if (win.searchUpdating)
+                    if (win.searchUpdating || win.switchingTabs)
                         return;
-                    var contentChanged = backend.editorTextChanged();
+                    var contentChanged = win.documentBackend.editorTextChanged();
                     if (win.searchOpen && contentChanged)
                         win.updateSearch(false);
                 }
@@ -1008,7 +1171,7 @@ ApplicationWindow {
                             ? next.x : box.x + writerFontMetrics.averageCharacterWidth;
                         if (y >= box.y && y < box.y + box.height
                                 && x >= Math.min(box.x, edge) && x < Math.max(box.x, edge))
-                            return backend.linkUrlAt(position);
+                            return win.documentBackend.linkUrlAt(position);
                     }
                     return "";
                 }
@@ -1036,7 +1199,7 @@ ApplicationWindow {
                         // one that looks like HTML instead of showing it.
                         textFormat: Text.PlainText
                         text: editor.hoveredLinkUrl
-                        font.family: backend.editorFont
+                        font.family: win.documentBackend.editorFont
                         font.pixelSize: win.scaledSize(12)
                         elide: Text.ElideMiddle
                     }
@@ -1044,7 +1207,14 @@ ApplicationWindow {
                 }
 
                 Component.onCompleted: {
-                    backend.attachDocument(textDocument);
+                    if (win.workspace) {
+                        win.documentBackend.activateDocument(textDocument);
+                        var state = win.workspace.viewState();
+                        cursorPosition = Math.min(length, state.cursor || 0);
+                        Qt.callLater(function() { editorFlick.contentY = state.scroll || 0; });
+                    } else {
+                        win.documentBackend.attachDocument(textDocument);
+                    }
                     forceActiveFocus();
                 }
             }
@@ -1064,7 +1234,7 @@ ApplicationWindow {
                 iconName: "save"
                 iconColor: win.mutedColor
                 tooltip: "Save"
-                onClicked: backend.save()
+                onClicked: win.documentBackend.save()
             }
 
             FooterIconButton {
@@ -1072,7 +1242,7 @@ ApplicationWindow {
                 iconName: "open"
                 iconColor: win.mutedColor
                 tooltip: "Open"
-                onClicked: backend.openDialog()
+                onClicked: win.documentBackend.openDialog()
             }
 
             FooterIconButton {
@@ -1084,8 +1254,21 @@ ApplicationWindow {
                 onClicked: fontPicker.opened ? fontPicker.close() : fontPicker.open()
             }
 
+            Button {
+                id: writingButton
+                objectName: "writingSettingsButton"
+                text: "Aa ⋮"
+                flat: true
+                height: win.scaledSize(20)
+                font.pixelSize: win.scaledSize(12)
+                Accessible.name: "Writing settings"
+                ToolTip.visible: hovered
+                ToolTip.text: "Text width, size and autosave"
+                onClicked: writingSettings.opened ? writingSettings.close() : writingSettings.open()
+            }
+
             Label {
-                text: backend.status
+                text: win.documentBackend.status
                 color: win.mutedColor
                 font.family: "IBM Plex Mono"
                 font.pixelSize: win.scaledSize(11)
@@ -1095,6 +1278,81 @@ ApplicationWindow {
                 height: win.scaledSize(16)
                 verticalAlignment: Text.AlignVCenter
             }
+        }
+
+        Popup {
+            id: writingSettings
+            objectName: "writingSettings"
+            parent: writingButton
+            x: Math.min(0, win.width - writingButton.mapToItem(win.contentItem, 0, 0).x - width - 12)
+            y: -height - 10
+            width: Math.min(win.scaledSize(340), win.width - 24)
+            padding: 16
+            background: Rectangle {
+                color: win.darkMode ? "#29282c" : "#fafafa"
+                border.color: win.darkMode ? "#4b494f" : "#d0d0d0"
+                radius: 6
+            }
+            implicitHeight: Math.min(settingsColumn.implicitHeight + topPadding + bottomPadding,
+                                     win.height - 70)
+            contentItem: ScrollView {
+                id: settingsScroll
+                clip: true
+                contentWidth: availableWidth
+                contentHeight: settingsColumn.implicitHeight
+                ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+                ColumnLayout {
+                    id: settingsColumn
+                    width: settingsScroll.availableWidth
+                    spacing: 12
+                    Label { text: "Text width"; color: win.textColor }
+                    ComboBox {
+                        objectName: "widthSelector"
+                        Layout.fillWidth: true
+                        model: ["Narrow", "Medium", "Wide", "Full width"]
+                        currentIndex: ["narrow", "medium", "wide", "full"].indexOf(win.documentBackend.widthMode)
+                        onActivated: win.documentBackend.widthMode = ["narrow", "medium", "wide", "full"][currentIndex]
+                    }
+                    Label { text: "Font size"; color: win.textColor }
+                    RowLayout {
+                        Button {
+                            Layout.preferredWidth: win.scaledSize(48)
+                            Layout.minimumWidth: 0
+                            text: "−"
+                            Accessible.name: "Decrease font size"
+                            onClicked: win.documentBackend.decreaseTextSize()
+                        }
+                        Button {
+                            objectName: "fontSizeReset"
+                            Layout.fillWidth: true
+                            text: Math.round(win.documentBackend.textZoom * 100) + "%"
+                            Accessible.name: "Reset font size"
+                            onClicked: win.documentBackend.resetTextSize()
+                        }
+                        Button {
+                            Layout.preferredWidth: win.scaledSize(48)
+                            Layout.minimumWidth: 0
+                            text: "+"
+                            Accessible.name: "Increase font size"
+                            onClicked: win.documentBackend.increaseTextSize()
+                        }
+                    }
+                    Switch {
+                        objectName: "autoSaveSwitch"
+                        text: "Autosave named files"
+                        checked: win.documentBackend.autoSaveEnabled
+                        onToggled: win.documentBackend.autoSaveEnabled = checked
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        text: "Unsaved tabs are kept for the next launch."
+                        wrapMode: Text.WordWrap
+                        font.pixelSize: win.scaledSize(12)
+                        color: win.mutedColor
+                    }
+                }
+            }
+            onClosed: editor.forceActiveFocus()
         }
 
         FontPicker {
@@ -1107,15 +1365,15 @@ ApplicationWindow {
             y: -height - 10
             width: win.scaledSize(320)
             maximumHeight: Math.min(win.scaledSize(440), win.height - 80)
-            fonts: backend.availableFonts
-            currentFont: backend.editorFont
+            fonts: win.documentBackend.availableFonts
+            currentFont: win.documentBackend.editorFont
             defaultFont: "IBM Plex Mono"
             darkMode: win.darkMode
             textScale: win.textScale
             textColor: win.textColor
             mutedColor: win.mutedColor
-            highlightColor: backend.themeAccent
-            onFontChosen: function(family) { backend.editorFont = family; }
+            highlightColor: win.documentBackend.themeAccent
+            onFontChosen: function(family) { win.documentBackend.editorFont = family; }
             onClosed: editor.forceActiveFocus()
         }
 
@@ -1124,7 +1382,7 @@ ApplicationWindow {
             anchors.bottom: parent.bottom
             anchors.rightMargin: 12
             anchors.bottomMargin: 10
-            text: backend.wordCount + (backend.wordCount === 1 ? " Word" : " Words")
+            text: win.documentBackend.wordCount + (win.documentBackend.wordCount === 1 ? " Word" : " Words")
             color: win.mutedColor
             opacity: 0.75
             font.family: "IBM Plex Mono"
@@ -1251,7 +1509,7 @@ ApplicationWindow {
                                                      replacement);
                         // Carry on past what was just written, so a replacement
                         // the query also matches is not found again.
-                        win.searchMatches = backend.searchMatches(searchField.text);
+                        win.searchMatches = win.documentBackend.searchMatches(searchField.text);
                         win.searchMatchIndex = win.matchAtOrAfter(start + replacement.length);
                         win.showSearchMatch(true);
                     }
@@ -1308,7 +1566,7 @@ ApplicationWindow {
     }
 
     Component.onCompleted: {
-        var geometry = backend.windowGeometry();
+        var geometry = win.documentBackend.windowGeometry();
         if (geometry.x >= 0) x = geometry.x;
         if (geometry.y >= 0) y = geometry.y;
         width = geometry.width;
@@ -1316,6 +1574,6 @@ ApplicationWindow {
         if (geometry.maximized) showMaximized();
     }
 
-    Component.onDestruction: backend.saveWindowGeometry(x, y, width, height, visibility === Window.Maximized)
+    Component.onDestruction: win.documentBackend.saveWindowGeometry(x, y, width, height, visibility === Window.Maximized)
 
 }

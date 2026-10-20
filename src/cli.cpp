@@ -4,9 +4,9 @@
 
 QString Cli::usage() {
     return QStringLiteral(
-        "Usage: omawrite [FILE]\n"
+        "Usage: omawrite [FILE ...]\n"
         "\n"
-        "Opens FILE, a Markdown file, or an empty document without one. Omawrite\n"
+        "Restores the previous tabs and opens each FILE in a tab. Omawrite\n"
         "is a graphical app and keeps running until its window is closed.\n"
         "\n"
         "Options:\n"

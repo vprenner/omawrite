@@ -21,6 +21,7 @@
 #include "cli.h"
 
 #include "backend.h"
+#include "workspace.h"
 #include "markdownhighlighter.h"
 
 // Counts QML "Binding loop detected" warnings while it is alive, forwarding
@@ -53,8 +54,9 @@ class OmawriteTest : public QObject {
 private slots:
     void initTestCase() {
         QCoreApplication::setApplicationVersion(QStringLiteral("1.2.3-test"));
-        QStandardPaths::setTestModeEnabled(true);
         QVERIFY(m_settingsDirectory.isValid());
+        // Recovery and session tests must not read or write the user's drafts.
+        qputenv("XDG_DATA_HOME", m_settingsDirectory.filePath("data").toUtf8());
         QQuickStyle::setStyle(QStringLiteral("Material"));
         QSettings::setDefaultFormat(QSettings::IniFormat);
         QSettings::setPath(QSettings::IniFormat, QSettings::UserScope,
@@ -74,6 +76,316 @@ private slots:
         QCOMPARE(Backend::countWords(QStringLiteral("𠀀𠀁 foo")), 3);
         QCOMPARE(Backend::countWords(QStringLiteral("안녕하세요 세계")), 2);
         QCOMPARE(Backend::countWords(QString()), 0);
+    }
+
+    void tabSessionRestoresFilesAndDrafts() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString state = directory.filePath("sessions");
+        const QUrl saved = QUrl::fromLocalFile(directory.filePath("saved.md"));
+        const QUrl dirty = QUrl::fromLocalFile(directory.filePath("dirty.md"));
+        const QUrl missing = QUrl::fromLocalFile(directory.filePath("missing.md"));
+        for (const QUrl &url : {saved, dirty, missing}) {
+            QFile file(url.toLocalFile());
+            QVERIFY(file.open(QIODevice::WriteOnly));
+            file.write("original");
+        }
+        {
+            Workspace workspace(nullptr, state);
+            workspace.openFile(saved);
+            workspace.openFile(dirty);
+            Backend *document = workspace.activeDocument();
+            document->setAutoSaveEnabled(false);
+            document->m_document->setPlainText("unsaved named edit");
+            document->editorTextChanged();
+            workspace.openFile(missing);
+            workspace.newTab();
+            document = workspace.activeDocument();
+            document->m_document->setPlainText("untitled draft 📝");
+            document->editorTextChanged();
+            workspace.saveViewState(7, 42);
+            QVERIFY(workspace.saveSession());
+            QCOMPARE(workspace.tabs().size(), 4);
+        }
+        QVERIFY(QFile::remove(missing.toLocalFile()));
+        {
+            QFile file(saved.toLocalFile());
+            QVERIFY(file.open(QIODevice::WriteOnly));
+            file.write("changed while closed");
+        }
+        {
+            Workspace restored(nullptr, state);
+            QCOMPARE(restored.tabs().size(), 4);
+            QCOMPARE(restored.currentIndex(), 3);
+            QCOMPARE(restored.activeDocument()->currentDocumentText(), QStringLiteral("untitled draft 📝"));
+            QVERIFY(restored.activeDocument()->modified());
+            QCOMPARE(restored.viewState().value("cursor").toInt(), 7);
+            QCOMPARE(restored.viewState().value("scroll").toInt(), 42);
+            restored.selectTab(0);
+            QCOMPARE(restored.activeDocument()->currentDocumentText(), QStringLiteral("changed while closed"));
+            QVERIFY(!restored.activeDocument()->modified());
+            restored.selectTab(1);
+            QCOMPARE(restored.activeDocument()->currentDocumentText(), QStringLiteral("unsaved named edit"));
+            restored.activeDocument()->setAutoSaveEnabled(true);
+            QTest::qWait(650);
+            QFile file(dirty.toLocalFile());
+            QVERIFY(file.open(QIODevice::ReadOnly));
+            QCOMPARE(file.readAll(), QByteArray("original"));
+            restored.selectTab(2);
+            QCOMPARE(restored.activeDocument()->currentDocumentText(), QStringLiteral("original"));
+            QVERIFY(restored.activeDocument()->modified());
+            QVERIFY(!QFileInfo::exists(missing.toLocalFile()));
+            restored.closeTab(2);
+            QCOMPARE(restored.tabs().size(), 3);
+        }
+        Workspace reopened(nullptr, state);
+        QCOMPARE(reopened.tabs().size(), 3);
+        reopened.openFile(saved);
+        QCOMPARE(reopened.tabs().size(), 3); // no duplicate for an already open path
+        QCOMPARE(reopened.currentIndex(), 0);
+    }
+
+    void runningWindowsKeepSeparateSessions() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        {
+            Workspace first(nullptr, directory.path());
+            first.activeDocument()->m_document->setPlainText("first window");
+            first.activeDocument()->editorTextChanged();
+            Workspace second(nullptr, directory.path());
+            QCOMPARE(second.activeDocument()->currentDocumentText(), QString());
+            second.activeDocument()->m_document->setPlainText("second window");
+            second.activeDocument()->editorTextChanged();
+            QVERIFY(first.saveSession());
+            QVERIFY(second.saveSession());
+        }
+        Workspace first(nullptr, directory.path());
+        QCOMPARE(first.activeDocument()->currentDocumentText(), QStringLiteral("first window"));
+        Workspace second(nullptr, directory.path());
+        QCOMPARE(second.activeDocument()->currentDocumentText(), QStringLiteral("second window"));
+    }
+
+    void autosavePreferenceAppliesToBackgroundTabs() {
+        QTemporaryDir directory;
+        const QUrl url = QUrl::fromLocalFile(directory.filePath("autosave.md"));
+        QFile file(url.toLocalFile());
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write("before");
+        file.close();
+        Workspace workspace(nullptr, directory.filePath("session"));
+        workspace.openFile(url);
+        Backend *document = workspace.activeDocument();
+        document->setAutoSaveEnabled(true);
+        document->m_document->setPlainText("after");
+        document->editorTextChanged();
+        QVERIFY(document->m_autoSaveTimer.isActive());
+        workspace.newTab();
+        workspace.activeDocument()->setAutoSaveEnabled(false);
+        QVERIFY(!document->autoSaveEnabled());
+        QVERIFY(!document->m_autoSaveTimer.isActive());
+        QTest::qWait(650);
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QCOMPARE(file.readAll(), QByteArray("before"));
+        file.close();
+        workspace.activeDocument()->setWidthMode("wide");
+        workspace.activeDocument()->increaseTextSize();
+        QCOMPARE(document->widthMode(), QStringLiteral("wide"));
+        QCOMPARE(document->textZoom(), workspace.activeDocument()->textZoom());
+        workspace.activeDocument()->setAutoSaveEnabled(true);
+        QTRY_VERIFY_WITH_TIMEOUT(!document->modified(), 2000);
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QCOMPARE(file.readAll(), QByteArray("after"));
+        workspace.activeDocument()->setWidthMode("medium");
+        workspace.activeDocument()->resetTextSize();
+    }
+
+    void tabSwitchesPreserveTextUndoAndCaret() {
+        QTemporaryDir directory;
+        Workspace workspace(nullptr, directory.path());
+        QQmlEngine engine;
+        engine.rootContext()->setContextProperty(QStringLiteral("session"), &workspace);
+        QQmlComponent component(&engine, QUrl::fromLocalFile(QFINDTESTDATA("../src/Main.qml")));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        QScopedPointer<QObject> object(component.create());
+        QVERIFY2(object, qPrintable(component.errorString()));
+        auto *window = qobject_cast<QQuickWindow *>(object.data());
+        QVERIFY(window);
+        auto *editor = window->findChild<QQuickItem *>(QStringLiteral("sourceEditor"));
+        QVERIFY(editor);
+        window->requestActivate();
+        editor->forceActiveFocus();
+        for (char character : QByteArray("first draft")) QTest::keyClick(window, character);
+        QCOMPARE(workspace.activeDocument()->currentDocumentText(), QStringLiteral("first draft"));
+        editor->setProperty("cursorPosition", 4);
+        QTest::keyClick(window, Qt::Key_T, Qt::ControlModifier);
+        QCOMPARE(workspace.tabs().size(), 2);
+        QCOMPARE(editor->property("text").toString(), QString());
+        for (char character : QByteArray("second draft")) QTest::keyClick(window, character);
+        workspace.selectTab(0);
+        QCOMPARE(editor->property("text").toString(), QStringLiteral("first draft"));
+        QCOMPARE(editor->property("cursorPosition").toInt(), 4);
+        QTest::keyClick(window, Qt::Key_Z, Qt::ControlModifier);
+        QCOMPARE(editor->property("text").toString(), QString());
+        workspace.selectTab(1);
+        QCOMPARE(editor->property("text").toString(), QStringLiteral("second draft"));
+        // Closing the window keeps drafts without an unsaved-changes prompt.
+        QVERIFY(window->close());
+        QVERIFY(workspace.saveSession());
+    }
+
+    void sessionSnapshotsDraftsBeforeExit() {
+        QTemporaryDir directory;
+        Workspace workspace(nullptr, directory.filePath("running"));
+        workspace.newTab();
+        Backend *document = workspace.activeDocument();
+        document->m_document->setPlainText("survives a crash");
+        document->editorTextChanged();
+        const QString path = directory.filePath("running/window-0.json");
+        QTRY_VERIFY_WITH_TIMEOUT([&] {
+            QFile file(path);
+            return file.open(QIODevice::ReadOnly) && file.readAll().contains("survives a crash");
+        }(), 2000);
+        // Use only the snapshot produced by the timer, before normal shutdown.
+        QVERIFY(QDir().mkpath(directory.filePath("crashed")));
+        QVERIFY(QFile::copy(path, directory.filePath("crashed/window-0.json")));
+        Workspace restored(nullptr, directory.filePath("crashed"));
+        QCOMPARE(restored.tabs().size(), 2);
+        QCOMPARE(restored.currentIndex(), 1);
+        QCOMPARE(restored.activeDocument()->currentDocumentText(), QStringLiteral("survives a crash"));
+    }
+
+    void preventsSavingOverAnotherOpenTab() {
+        QTemporaryDir directory;
+        const QUrl url = QUrl::fromLocalFile(directory.filePath("already-open.md"));
+        QFile file(url.toLocalFile());
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write("original");
+        file.close();
+        Workspace workspace(nullptr, directory.filePath("session"));
+        workspace.openFile(url);
+        workspace.newTab();
+        Backend *document = workspace.activeDocument();
+        document->m_document->setPlainText("replacement");
+        document->editorTextChanged();
+        QSignalSpy failure(document, &Backend::saveFailed);
+        document->saveAs(url);
+        QCOMPARE(failure.size(), 1);
+        QVERIFY(document->modified());
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QCOMPARE(file.readAll(), QByteArray("original"));
+    }
+
+    void writingSettingsControlWidthsSizeAndAutosave() {
+        QTemporaryDir directory;
+        Workspace workspace(nullptr, directory.path());
+        workspace.activeDocument()->resetTextSize();
+        workspace.activeDocument()->setWidthMode("medium");
+        QQmlEngine engine;
+        engine.rootContext()->setContextProperty(QStringLiteral("session"), &workspace);
+        QQmlComponent component(&engine, QUrl::fromLocalFile(QFINDTESTDATA("../src/Main.qml")));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        QScopedPointer<QObject> object(component.create());
+        QVERIFY2(object, qPrintable(component.errorString()));
+        auto *window = qobject_cast<QQuickWindow *>(object.data());
+        auto *editor = object->findChild<QQuickItem *>(QStringLiteral("sourceEditor"));
+        QVERIFY(window && editor);
+        window->setWidth(1800);
+        QCoreApplication::processEvents();
+        QList<int> widths;
+        QObject *selector = object->findChild<QObject *>(QStringLiteral("widthSelector"));
+        QVERIFY(selector);
+        for (int index = 0; index < 4; ++index) {
+            selector->setProperty("currentIndex", index);
+            QVERIFY(QMetaObject::invokeMethod(selector, "activated", Q_ARG(int, index)));
+            QCoreApplication::processEvents();
+            widths.append(editor->width());
+        }
+        QVERIFY(widths[0] < widths[1] && widths[1] < widths[2] && widths[2] < widths[3]);
+        window->setWidth(394);
+        QCoreApplication::processEvents();
+        QVERIFY(editor->width() <= 394 - 48);
+        window->setWidth(1280);
+        QObject *settings = object->findChild<QObject *>(QStringLiteral("writingSettings"));
+        QVERIFY(settings);
+        QVERIFY(QMetaObject::invokeMethod(settings, "open"));
+        QTRY_VERIFY(settings->property("opened").toBool());
+        QVERIFY(settings->property("height").toInt() > 200);
+        QVERIFY(settings->property("y").toInt() + settings->parent()->property("y").toInt() < window->height());
+        QObject *toggle = object->findChild<QObject *>(QStringLiteral("autoSaveSwitch"));
+        QVERIFY(toggle);
+        toggle->setProperty("checked", false);
+        QVERIFY(QMetaObject::invokeMethod(toggle, "toggled"));
+        QVERIFY(!workspace.activeDocument()->autoSaveEnabled());
+        workspace.activeDocument()->increaseTextSize();
+        QObject *reset = object->findChild<QObject *>(QStringLiteral("fontSizeReset"));
+        QVERIFY(reset);
+        QCOMPARE(reset->property("text").toString(), QStringLiteral("110%"));
+        QVERIFY(QMetaObject::invokeMethod(reset, "clicked"));
+        QCOMPARE(workspace.activeDocument()->textZoom(), 1.0);
+        if (!qEnvironmentVariableIsEmpty("OMAWRITE_TEST_SCREENSHOT")) {
+            QTest::qWait(200);
+            QVERIFY(window->grabWindow().save(qEnvironmentVariable("OMAWRITE_TEST_SCREENSHOT")));
+        }
+        workspace.activeDocument()->setAutoSaveEnabled(true);
+        workspace.activeDocument()->setWidthMode("medium");
+    }
+
+    void closingModifiedTabCanCancelOrDiscard() {
+        QTemporaryDir directory;
+        Workspace workspace(nullptr, directory.path());
+        QQmlEngine engine;
+        engine.rootContext()->setContextProperty(QStringLiteral("session"), &workspace);
+        QQmlComponent component(&engine, QUrl::fromLocalFile(QFINDTESTDATA("../src/Main.qml")));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        QScopedPointer<QObject> object(component.create());
+        QVERIFY2(object, qPrintable(component.errorString()));
+        auto *window = qobject_cast<QQuickWindow *>(object.data());
+        auto *editor = object->findChild<QQuickItem *>(QStringLiteral("sourceEditor"));
+        QVERIFY(window && editor);
+        window->requestActivate();
+        editor->forceActiveFocus();
+        workspace.newTab();
+        for (char character : QByteArray("discard me")) QTest::keyClick(window, character);
+        QObject *dialog = object->findChild<QObject *>(QStringLiteral("unsavedChangesDialog"));
+        QVERIFY(dialog);
+        QTest::keyClick(window, Qt::Key_W, Qt::ControlModifier);
+        QTRY_VERIFY(dialog->property("opened").toBool());
+        QTest::keyClick(window, Qt::Key_Tab, Qt::ControlModifier);
+        QCOMPARE(workspace.currentIndex(), 1); // modal decisions keep their target
+        QTest::keyClick(window, Qt::Key_C, Qt::AltModifier);
+        QTRY_VERIFY(!dialog->property("visible").toBool());
+        QCOMPARE(workspace.tabs().size(), 2);
+        QCOMPARE(editor->property("text").toString(), QStringLiteral("discard me"));
+        QTest::keyClick(window, Qt::Key_W, Qt::ControlModifier);
+        QTRY_VERIFY(dialog->property("opened").toBool());
+        QTest::keyClick(window, Qt::Key_D, Qt::AltModifier);
+        QTRY_COMPARE(workspace.tabs().size(), 1);
+        QCOMPARE(editor->property("text").toString(), QString());
+        QVERIFY(workspace.saveSession());
+    }
+
+    void backgroundTabReportsExternalChangesWhenSelected() {
+        QTemporaryDir directory;
+        const QUrl url = QUrl::fromLocalFile(directory.filePath("outside.md"));
+        QFile file(url.toLocalFile());
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write("before");
+        file.close();
+        Workspace workspace(nullptr, directory.filePath("session"));
+        workspace.openFile(url);
+        Backend *document = workspace.activeDocument();
+        workspace.newTab();
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        file.write("outside change");
+        file.close();
+        QTRY_VERIFY(workspace.tabs()[0].toMap().value("externalChange").toBool());
+        QSignalSpy conflict(document, &Backend::externalChangeDetected);
+        workspace.selectTab(0);
+        QCOMPARE(conflict.size(), 1);
+        QVERIFY(document->m_autoSaveSuspended);
+        document->reloadFromDisk();
+        QCOMPARE(document->currentDocumentText(), QStringLiteral("outside change"));
+        QVERIFY(!workspace.tabs()[0].toMap().value("externalChange").toBool());
     }
 
     void searchIgnoresDiacriticsTheQueryLeavesOut() {
@@ -158,7 +470,7 @@ private slots:
 
     void answersHelpBeforeOpeningAWindow() {
         const QString usage = Cli::usage();
-        QVERIFY(usage.contains(QStringLiteral("omawrite [FILE]")));
+        QVERIFY(usage.contains(QStringLiteral("omawrite [FILE ...]")));
         QVERIFY(usage.contains(QStringLiteral("-h, --help")));
         QVERIFY(usage.contains(QStringLiteral("-v, --version")));
 

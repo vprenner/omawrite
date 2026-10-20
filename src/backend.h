@@ -11,12 +11,14 @@
 #include <QUrl>
 #include <QVariantList>
 #include <memory>
+#include <functional>
 
 class MarkdownHighlighter;
 class QFont;
 class QTextDocument;
 class QWindow;
 class QLockFile;
+class Workspace;
 
 class Backend : public QObject {
     Q_OBJECT
@@ -34,12 +36,20 @@ class Backend : public QObject {
     Q_PROPERTY(QString themeSelectionForeground READ themeSelectionForeground NOTIFY themeColorsChanged)
     Q_PROPERTY(QString editorFont READ editorFont WRITE setEditorFont NOTIFY editorFontChanged)
     Q_PROPERTY(QStringList availableFonts READ availableFonts CONSTANT)
+    Q_PROPERTY(bool autoSaveEnabled READ autoSaveEnabled WRITE setAutoSaveEnabled NOTIFY autoSaveEnabledChanged)
+    Q_PROPERTY(QString widthMode READ widthMode WRITE setWidthMode NOTIFY widthModeChanged)
+    Q_PROPERTY(qreal textZoom READ textZoom NOTIFY textScaleChanged)
 
 public:
-    explicit Backend(QObject *parent = nullptr);
+    explicit Backend(QObject *parent = nullptr, bool legacyRecovery = true);
     ~Backend() override;
 
     void setParentWindow(QWindow *window);
+    bool autoSaveEnabled() const { return m_autoSaveEnabled; }
+    void setAutoSaveEnabled(bool enabled);
+    QString widthMode() const { return m_widthMode; }
+    void setWidthMode(const QString &mode);
+    qreal textZoom() const { return m_textZoom; }
 
     QUrl fileUrl() const { return m_fileUrl; }
     QString fileName() const;
@@ -70,6 +80,7 @@ public:
     static QFont printFont(const QFont &editorFont, qreal screenDpi);
 
     Q_INVOKABLE void attachDocument(QObject *textDocument);
+    Q_INVOKABLE void activateDocument(QObject *textDocument);
     Q_INVOKABLE void openDialog();
     Q_INVOKABLE void open(const QUrl &url);
     void openOrStartFile(const QUrl &url);
@@ -115,10 +126,16 @@ signals:
     void saveDialogRequested(const QUrl &suggestedUrl);
     void saveSucceeded();
     void externalChangeDetected(bool deleted, bool locallyModified);
+    void externalChangeResolved();
+    void autoSaveEnabledChanged();
+    void widthModeChanged();
+    void documentEdited();
 
 private:
     friend class OmawriteTest;
+    friend class Workspace;
 
+    void initializeDocument(QTextDocument *document);
     void loadDocumentText(const QString &text);
     qreal steppedTextZoom(int direction) const;
     void setTextZoom(qreal zoom);
@@ -184,6 +201,9 @@ private:
     bool m_hasKnownFileContents = false;
     bool m_autoSaveSuspended = false;
     bool m_autoSaveHeld = false;
+    bool m_autoSaveEnabled = true;
+    QString m_widthMode = QStringLiteral("medium");
+    std::function<bool(const QUrl &)> m_saveAllowed;
     QString m_recoveryPath;
     std::unique_ptr<QLockFile> m_recoveryLock;
 

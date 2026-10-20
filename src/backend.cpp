@@ -119,7 +119,11 @@ QString Backend::normalizedLinkUrl(const QString &clipboardText) {
     return url.toString();
 }
 
-Backend::Backend(QObject *parent) : QObject(parent) {
+Backend::Backend(QObject *parent, bool legacyRecovery) : QObject(parent) {
+    m_autoSaveEnabled = QSettings().value(QStringLiteral("editor/autoSave"), true).toBool();
+    const QString mode = QSettings().value(QStringLiteral("editor/width"), QStringLiteral("medium")).toString();
+    if (QStringList{"narrow", "medium", "wide", "full"}.contains(mode))
+        m_widthMode = mode;
     // A settings file truncated by a crash reads back as an empty value, and
     // both that and a NaN would clamp to the smallest size rather than fall
     // back to the default.
@@ -138,7 +142,7 @@ Backend::Backend(QObject *parent) : QObject(parent) {
     QDir().mkpath(stateDirectory);
     // Claim an orphaned snapshot before taking an empty slot. This ensures a
     // crash in window 2 is still recovered even if window 1 exited normally.
-    for (int pass = 0; pass < 2 && !m_recoveryLock; ++pass) {
+    for (int pass = 0; legacyRecovery && pass < 2 && !m_recoveryLock; ++pass) {
         for (int slot = 0; slot < 100; ++slot) {
             const QString base = QDir(stateDirectory).filePath(
                 QStringLiteral("recovery-%1").arg(slot));
@@ -272,10 +276,25 @@ void Backend::attachDocument(QObject *textDocument) {
         return;
     }
 
+    initializeDocument(quickDocument->textDocument());
+    restoreRecovery();
+}
+
+void Backend::activateDocument(QObject *textDocument) {
+    auto *quickDocument = qobject_cast<QQuickTextDocument *>(textDocument);
+    if (!quickDocument || !m_document)
+        return;
+    // Swapping the view must not be treated as an edit to either tab.
+    m_loading = true;
+    quickDocument->setTextDocument(m_document);
+    m_loading = false;
+}
+
+void Backend::initializeDocument(QTextDocument *document) {
     if (m_highlighter)
         delete m_highlighter.data();
 
-    m_document = quickDocument->textDocument();
+    m_document = document;
     m_lastDocumentText = m_document->toPlainText();
     m_highlighter = new MarkdownHighlighter(m_document);
     m_highlighter->setTheme(m_darkMode, m_themeBackground, m_themeForeground, m_themeAccent,
@@ -291,7 +310,26 @@ void Backend::attachDocument(QObject *textDocument) {
             });
 
     applyDocumentTypography();
-    restoreRecovery();
+}
+
+void Backend::setAutoSaveEnabled(bool enabled) {
+    if (m_autoSaveEnabled == enabled)
+        return;
+    m_autoSaveEnabled = enabled;
+    QSettings().setValue(QStringLiteral("editor/autoSave"), enabled);
+    if (!enabled)
+        m_autoSaveTimer.stop();
+    else if (m_modified)
+        scheduleAutoSave();
+    emit autoSaveEnabledChanged();
+}
+
+void Backend::setWidthMode(const QString &mode) {
+    if (m_widthMode == mode || !QStringList{"narrow", "medium", "wide", "full"}.contains(mode))
+        return;
+    m_widthMode = mode;
+    QSettings().setValue(QStringLiteral("editor/width"), mode);
+    emit widthModeChanged();
 }
 
 void Backend::openDialog() {
@@ -333,6 +371,7 @@ void Backend::open(const QUrl &url) {
         setStatus(QStringLiteral("Opened %1. Auto-save is off to keep its encoding and line endings.")
                       .arg(fileName()));
     }
+    emit externalChangeResolved();
 }
 
 void Backend::save() {
@@ -416,6 +455,7 @@ void Backend::keepExternalVersion() {
     scheduleAutoSave();
     watchCurrentFile();
     setStatus(QStringLiteral("Kept your version"));
+    emit externalChangeResolved();
 }
 
 QFont Backend::printFont(const QFont &editorFont, qreal screenDpi) {
@@ -546,6 +586,7 @@ bool Backend::editorTextChanged() {
         scheduleAutoSave();
     }
 
+    emit documentEdited();
     return true;
 }
 
@@ -836,6 +877,11 @@ void Backend::setStatus(const QString &status) {
 }
 
 void Backend::saveTo(const QUrl &url) {
+    if (m_saveAllowed && !m_saveAllowed(url)) {
+        setStatus(QStringLiteral("This file is open in another tab. Close that tab or choose another name."));
+        emit saveFailed();
+        return;
+    }
     if (!url.isLocalFile()) {
         setStatus(QStringLiteral("Only local files can be saved."));
         emit saveFailed();
@@ -891,7 +937,7 @@ void Backend::scheduleAutoSave() {
     // manual save so auto-save never silently opens a file picker or creates a
     // file the writer did not name; crash recovery still covers them. A named
     // file that does not exist yet waits for an explicit save (see autoSave()).
-    if (m_fileUrl.isLocalFile() && !m_autoSaveSuspended && !m_autoSaveHeld)
+    if (m_autoSaveEnabled && m_fileUrl.isLocalFile() && !m_autoSaveSuspended && !m_autoSaveHeld)
         m_autoSaveTimer.start();
 }
 
@@ -904,7 +950,7 @@ void Backend::holdAutoSave(bool held) {
 }
 
 void Backend::autoSave() {
-    if (!m_modified || !m_fileUrl.isLocalFile() || m_autoSaveSuspended || m_autoSaveHeld)
+    if (!m_autoSaveEnabled || !m_modified || !m_fileUrl.isLocalFile() || m_autoSaveSuspended || m_autoSaveHeld)
         return;
 
     // Never write over a version we have not seen. The watcher normally
@@ -983,6 +1029,8 @@ void Backend::writeRecovery() {
 }
 
 void Backend::restoreRecovery() {
+    if (m_recoveryPath.isEmpty())
+        return;
     QFile file(m_recoveryPath);
     if (!file.open(QIODevice::ReadOnly))
         return;
@@ -1012,7 +1060,8 @@ void Backend::restoreRecovery() {
 
 void Backend::clearRecovery() {
     m_recoveryTimer.stop();
-    QFile::remove(m_recoveryPath);
+    if (!m_recoveryPath.isEmpty())
+        QFile::remove(m_recoveryPath);
 }
 
 void Backend::unwatchFiles() {
