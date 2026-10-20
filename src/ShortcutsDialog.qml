@@ -13,7 +13,7 @@ Dialog {
     property real textScale: 1
     property int containerWidth: 1280
     property int containerHeight: 820
-    readonly property string versionText: "Omawrite " + Qt.application.version
+    readonly property string versionText: "OmawriteV " + Qt.application.version
     readonly property var shortcuts: [
         { key: "Ctrl+S", desc: "Save" },
         { key: "Ctrl+Shift+S", desc: "Save As" },

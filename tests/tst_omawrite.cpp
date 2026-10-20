@@ -470,13 +470,13 @@ private slots:
 
     void answersHelpBeforeOpeningAWindow() {
         const QString usage = Cli::usage();
-        QVERIFY(usage.contains(QStringLiteral("omawrite [FILE ...]")));
+        QVERIFY(usage.contains(QStringLiteral("omawritev [FILE ...]")));
         QVERIFY(usage.contains(QStringLiteral("-h, --help")));
         QVERIFY(usage.contains(QStringLiteral("-v, --version")));
 
         const QString version = QStringLiteral("1.2.3");
         const auto answer = [&](const QStringList &arguments) {
-            return Cli::handleArguments(QStringList{QStringLiteral("omawrite")} + arguments,
+            return Cli::handleArguments(QStringList{QStringLiteral("omawritev")} + arguments,
                                         version);
         };
         QCOMPARE(answer({QStringLiteral("--help")}), std::optional<int>(0));
@@ -2952,7 +2952,7 @@ private slots:
             QVERIFY(versionLabel);
             QVERIFY(versionLabel->property("visible").toBool());
             QCOMPARE(versionLabel->property("text").toString(),
-                     QStringLiteral("Omawrite ") + QCoreApplication::applicationVersion());
+                     QStringLiteral("OmawriteV ") + QCoreApplication::applicationVersion());
             QTest::keyClick(window, Qt::Key_Minus, Qt::ControlModifier);
             QCOMPARE(backend.textScale(), scale);
             QVERIFY(dialog->property("x").toReal() >= 0);

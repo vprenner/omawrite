@@ -1,4 +1,4 @@
-# Omawrite
+# OmawriteV
 
 A dead-simple Markdown writing app built with Qt Quick and C++ that automatically follows system dark/light mode.
 
@@ -8,14 +8,18 @@ A dead-simple Markdown writing app built with Qt Quick and C++ that automaticall
 
 ## Install
 
-Install via the Omarchy Package Repository via the `omawrite` package. It's installed by default in new installations of Omarchy (from Quattro forward).
+This is the [vprenner/omawrite](https://github.com/vprenner/omawrite) fork of
+[Omawrite](https://github.com/omacom/omawrite). Its executable, desktop app ID,
+icon, package, settings, and session directory use `omawritev`, so it can be
+installed alongside the upstream `omawrite` package. Build and install this
+fork with `./bin/install`; it is not published in the Omarchy package repository.
 
 ## Command line
 
-`omawrite` restores the previous window's tabs, or starts with an empty tab.
-`omawrite FILE ...` also opens the supplied Markdown files in tabs. Opening a
+`omawritev` restores the previous window's tabs, or starts with an empty tab.
+`omawritev FILE ...` also opens the supplied Markdown files in tabs. Opening a
 file that is already in this window selects its existing tab.
-`omawrite --help` and `omawrite --version` answer in the terminal without opening a window.
+`omawritev --help` and `omawritev --version` answer in the terminal without opening a window.
 
 ## Shortcuts
 
@@ -25,7 +29,7 @@ file that is already in this window selects its existing tab.
 - `Ctrl+P` opens the system print dialog.
 - `Ctrl+T` creates a tab; `Ctrl+W` closes the current tab.
 - `Ctrl+Tab` / `Ctrl+Shift+Tab` (or `Ctrl+PageDown` / `Ctrl+PageUp`) switch tabs.
-- `Ctrl+N` opens a new Omawrite window.
+- `Ctrl+N` opens a new OmawriteV window.
 - `Ctrl+Z`, `Ctrl+Shift+Z`, and `Ctrl+Y` handle undo and redo.
 - `Super+F` toggles fullscreen. Qt maps this key as `Meta+F`.
 - `Ctrl+F` searches the document. Use `Enter` or `Ctrl+G` for the next match and `Shift+Enter` for the previous match.
@@ -47,7 +51,7 @@ characters. All widths fit within the available window space.
 Autosave is on by default. Once a document has been saved to a file, edits are
 auto-saved a moment after you stop typing. Turning autosave off cancels pending
 saves; `Ctrl+S` still saves explicitly. Untitled drafts wait for an explicit save
-so Omawrite never picks a file name for you. Omawrite watches every open file,
+so OmawriteV never picks a file name for you. OmawriteV watches every open file,
 including background tabs, and warns about external changes. Autosave pauses
 until you reload, keep your version, or save.
 
@@ -57,21 +61,25 @@ tab asks whether to save, discard, or cancel; discarded tabs are not restored.
 Each tab retains its own undo history while the app is running.
 
 Sessions are stored as private, atomic JSON snapshots in
-`$XDG_DATA_HOME/Omacom/omawrite/sessions` (normally
-`~/.local/share/Omacom/omawrite/sessions`). Snapshots update after a short typing
+`$XDG_DATA_HOME/Omacom/omawritev/sessions` (normally
+`~/.local/share/Omacom/omawritev/sessions`). Snapshots update after a short typing
 pause and on normal window close, independently of the autosave setting. They
 contain document text, including unnamed drafts. Clean files reopen from disk;
 unsaved edits and missing files restore from the snapshot. Restored unsaved
 changes are never auto-saved over their file: save explicitly to keep them.
+On the first launch after renaming, previous fork tab sessions and preferences
+are copied from `Omacom/omawrite` when the new locations are empty. The original
+state is retained.
+
 Separate running windows use separate locked sessions. Each launch restores one
 available previous window session.
 
 The font button in the footer picks the writing font from any installed text font,
-and Omawrite remembers the choice. IBM Plex Mono is the default.
+and OmawriteV remembers the choice. IBM Plex Mono is the default.
 
 Text follows the desktop text size — `omarchy display text size`, or GNOME's
 `text-scaling-factor` — and re-flows without a restart. The default of 12px leaves
-Omawrite at the size it is designed around; larger and smaller sizes scale from there.
+OmawriteV at the size it is designed around; larger and smaller sizes scale from there.
 `Ctrl+=`, `Ctrl+-`, and `Ctrl+scroll` set your own size on top of that, from 50% to
 300% in browser-sized steps. It is remembered for the next window you open.
 
@@ -92,14 +100,14 @@ QtTest; both ship in `qt6-base`.
 ```sh
 ./bin/build
 ./bin/test
-./build/omawrite
+./build/omawritev
 ```
 
 `bin/test` runs the Qt test suite with the offscreen platform, so it does not
 require an active graphical session. To open a file with the local build:
 
 ```sh
-./build/omawrite path/to/document.md
+./build/omawritev path/to/document.md
 ```
 
 On Arch Linux or Omarchy, install `base-devel` for the packaging tools, then

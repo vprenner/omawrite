@@ -4,9 +4,9 @@
 
 QString Cli::usage() {
     return QStringLiteral(
-        "Usage: omawrite [FILE ...]\n"
+        "Usage: omawritev [FILE ...]\n"
         "\n"
-        "Restores the previous tabs and opens each FILE in a tab. Omawrite\n"
+        "Restores the previous tabs and opens each FILE in a tab. OmawriteV\n"
         "is a graphical app and keeps running until its window is closed.\n"
         "\n"
         "Options:\n"
@@ -24,7 +24,7 @@ std::optional<int> Cli::handleArguments(const QStringList &arguments, const QStr
         return 0;
     }
     if (first == QLatin1String("-v") || first == QLatin1String("--version")) {
-        QTextStream(stdout) << QStringLiteral("omawrite %1\n").arg(version);
+        QTextStream(stdout) << QStringLiteral("omawritev %1\n").arg(version);
         return 0;
     }
 

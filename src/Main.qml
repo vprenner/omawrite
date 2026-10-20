@@ -18,7 +18,7 @@ ApplicationWindow {
     minimumWidth: 720
     minimumHeight: 520
     visible: true
-    title: (win.documentBackend.modified ? "* " : "") + win.documentBackend.fileName + " - Omawrite"
+    title: (win.documentBackend.modified ? "* " : "") + win.documentBackend.fileName + " - OmawriteV"
 
     readonly property bool darkMode: win.documentBackend.darkMode
     readonly property color pageColor: win.documentBackend.themeBackground

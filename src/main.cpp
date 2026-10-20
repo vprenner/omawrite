@@ -9,6 +9,10 @@
 #include <QUrl>
 #include <QWindow>
 #include <QFile>
+#include <QDir>
+#include <QSettings>
+#include <QStandardPaths>
+#include <QTemporaryDir>
 
 #include "backend.h"
 #include "cli.h"
@@ -16,6 +20,34 @@
 #include "workspace.h"
 
 #define OMAWRITE_VERSION "0.7.2"
+
+// The first fork build shared upstream's identity. Copy its tab sessions into
+// the new namespace once, without moving or modifying the previous state.
+static bool importPreviousForkState() {
+    const QDir data(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation));
+    const QString destination = data.filePath(QStringLiteral("sessions"));
+    const QDir previous(QDir::cleanPath(data.filePath(QStringLiteral("../omawrite/sessions"))));
+    const QStringList snapshots = previous.entryList({QStringLiteral("window-*.json")}, QDir::Files);
+    if (!QFileInfo::exists(destination) && !snapshots.isEmpty()) {
+        if (!QDir().mkpath(data.path())) return false;
+        QTemporaryDir staging(data.filePath(QStringLiteral(".sessions-XXXXXX")));
+        if (!staging.isValid()) return false;
+        for (const QString &name : snapshots) {
+            const QString target = staging.filePath(name);
+            if (!QFile::copy(previous.filePath(name), target)) return false;
+            QFile::setPermissions(target, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+        }
+        if (!QDir().rename(staging.path(), destination)) return false;
+        staging.setAutoRemove(false);
+    }
+    QSettings settings;
+    if (settings.allKeys().isEmpty()) {
+        const QSettings previousSettings(QStringLiteral("Omacom"), QStringLiteral("omawrite"));
+        for (const QString &key : previousSettings.allKeys())
+            settings.setValue(key, previousSettings.value(key));
+    }
+    return true;
+}
 
 int main(int argc, char *argv[]) {
     // Answered before the application exists, so they need no display.
@@ -30,21 +62,26 @@ int main(int argc, char *argv[]) {
     if (qgetenv("QT_QPA_PLATFORMTHEME") == "gtk3")
         qputenv("QT_QPA_PLATFORMTHEME", "xdgdesktopportal");
 
+    // Set the identity before Qt initializes its platform/portal integration.
+    QCoreApplication::setApplicationName(QStringLiteral("omawritev"));
+    QCoreApplication::setApplicationVersion(QStringLiteral(OMAWRITE_VERSION));
+    QCoreApplication::setOrganizationName(QStringLiteral("Omacom"));
+    QCoreApplication::setOrganizationDomain(QStringLiteral("omacom.io"));
+    QGuiApplication::setDesktopFileName(QStringLiteral("omawritev"));
     QApplication app(argc, argv);
-    app.setApplicationName(QStringLiteral("omawrite"));
-    app.setApplicationVersion(QStringLiteral(OMAWRITE_VERSION));
-    app.setDesktopFileName(QStringLiteral("omawrite"));
-    app.setWindowIcon(QIcon::fromTheme(QStringLiteral("omawrite")));
+    app.setApplicationDisplayName(QStringLiteral("OmawriteV"));
+    app.setWindowIcon(QIcon::fromTheme(QStringLiteral("omawritev")));
 
     QFontDatabase::addApplicationFont(QStringLiteral(":/fonts/IBMPlexMono-Regular.ttf"));
     QFontDatabase::addApplicationFont(QStringLiteral(":/fonts/IBMPlexMono-Italic.ttf"));
     QFontDatabase::addApplicationFont(QStringLiteral(":/fonts/IBMPlexMono-Bold.ttf"));
     QFontDatabase::addApplicationFont(QStringLiteral(":/fonts/IBMPlexMono-BoldItalic.ttf"));
-    app.setOrganizationName(QStringLiteral("Omacom"));
-    app.setOrganizationDomain(QStringLiteral("omacom.io"));
-
     QQuickStyle::setStyle(QStringLiteral("Material"));
 
+    if (!importPreviousForkState()) {
+        qCritical() << "Could not copy previous tab sessions into OmawriteV; the original sessions are intact.";
+        return 1;
+    }
     Workspace workspace(&app);
     SystemTheme systemTheme(&app);
     workspace.setDarkMode(systemTheme.darkMode());
@@ -88,7 +125,7 @@ int main(int argc, char *argv[]) {
 
     engine.load(QUrl(QStringLiteral("qrc:/Main.qml")));
     if (engine.rootObjects().isEmpty()) {
-        qCritical() << "Could not load the Omawrite interface; resource available:"
+        qCritical() << "Could not load the OmawriteV interface; resource available:"
                     << QFile::exists(QStringLiteral(":/Main.qml"));
         return -1;
     }
